@@ -27,6 +27,8 @@ import org.apache.spark.api.java.function.Function;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 
 public final class BadRecordCount {
   private static final Pattern SPACE = Pattern.compile(" ");
@@ -38,7 +40,7 @@ public final class BadRecordCount {
       System.exit(1);
     }
 
-    boolean isEC2 = false;
+    boolean isEC2 = true;
     String path = args[0];
     // an example s3 buckent address: s3n://your_bucket/your_file
 
@@ -49,10 +51,12 @@ public final class BadRecordCount {
     hadoopConf.set("textinputformat.record.delimiter", "\n\n");
 
     // If the submission is on EC2, you need to set access key and secret access key
+    String masterAdd = null;
     if (isEC2) 
     {
-        hadoopConf.set("fs.s3n.awsAccessKeyId", "AKIAJCDSXTLDPIQNVGZA");
-        hadoopConf.set("fs.s3n.awsSecretAccessKey", "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");
+        hadoopConf.set("fs.s3n.awsAccessKeyId", "AKIaYOURaOWNaKEYaJPQ");
+        hadoopConf.set("fs.s3n.awsSecretAccessKey", "v5vBmazYOURaOWNaSECRETaKEYaT8yX4jXC+mGLl");
+        masterAdd = "ec2-54-213-21-124.us-west-2.compute.amazonaws.com";
     }
 
     JavaSparkContext ctx = new JavaSparkContext(sparkConf);
@@ -86,6 +90,46 @@ public final class BadRecordCount {
 
     //Print out the result
     System.out.println("Find " + count + " bad records in this file");
+
+    //Map lines to pairs. The key is the type of the record. 
+    JavaPairRDD<String, Integer> typeFlag = lines.mapToPair(new PairFunction<Tuple2<LongWritable, Text>, String, Integer>() {
+      @Override
+      public Tuple2<String, Integer> call(Tuple2<LongWritable, Text> tuple) {
+        if (-1 == tuple._2().find(badMsg))
+            return new Tuple2<String, Integer>("bad", 1);
+        return new Tuple2<String, Integer>("good", 1);
+      }
+    });
+
+    //Reduce to get counts for each type 
+    JavaPairRDD<String, Integer> typeCount = typeFlag.reduceByKey(new Function2<Integer, Integer, Integer>() {
+      @Override
+      public Integer call(Integer a1, Integer a2) {
+            return a1 + a2;
+      }
+    });
+
+    try {
+
+        //Save result to local file. First collect RDD to local list, and then save it. 
+        PrintWriter wt = new PrintWriter(new FileWriter("result_local.txt"));
+        List<Tuple2<String, Integer> > resultSet = typeCount.collect();
+
+        for (Tuple2<String, Integer> elem : resultSet)
+        {
+            wt.println("(" + elem._1() + "," + elem._2() + ")");
+        }
+        wt.close();
+
+        //Save result to hdfs file. The RDD object is directly saved to hdfs file 
+        String fileName = "hdfs://" + masterAdd + ":9000/result_hdfs";
+        typeCount.coalesce(1).saveAsTextFile(fileName);
+    } catch (Exception e)
+    {
+        System.err.println("Cannot write result file.");
+        System.err.println(e.getMessage());
+    }
+
 
     ctx.stop();
   }
